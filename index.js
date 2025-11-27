@@ -1,3 +1,5 @@
+const http = require('http');
+
 const {
   Client,
   GatewayIntentBits,
@@ -295,5 +297,15 @@ The bot will auto-approve ✅ and lock the channel when the limit is reached.
     );
   }
 });
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('TaskBot is running.\n');
+  })
+  .listen(PORT, () => {
+    console.log(`🌐 HTTP server listening on port ${PORT}`);
+  });
 
 client.login(process.env.BOT_TOKEN);
