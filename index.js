@@ -7,7 +7,10 @@ const {
   PermissionsBitField,
   ChannelType,
 } = require('discord.js');
+
 require('dotenv').config();
+
+/* -------------------- DISCORD CLIENT -------------------- */
 
 const client = new Client({
   intents: [
@@ -20,6 +23,8 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
+/* -------------------- IN-MEMORY TASK STORE -------------------- */
+
 const tasks = new Map();
 
 const CONFIG = {
@@ -29,6 +34,8 @@ const CONFIG = {
   tryoutRoleId: process.env.TRYOUT_ROLE_ID || null,
 };
 
+/* -------------------- HELPERS -------------------- */
+
 function isAdmin(member) {
   if (!member) return false;
   if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
@@ -36,72 +43,72 @@ function isAdmin(member) {
   return false;
 }
 
-client.once('clientReady', () => {
+/* -------------------- BOT READY -------------------- */
+
+client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 
   client.user.setStatus('online');
-
-  client.user.setActivity('Deleting Deadlines', {
-    type: 3,
-  });
+  client.user.setActivity('Deleting Deadlines', { type: 3 });
 });
+
+/* -------------------- AUTO APPROVE SCREENSHOTS -------------------- */
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  const guild = message.guild;
-  if (!guild) return;
+  if (!message.guild) return;
 
   const taskData = tasks.get(message.channel.id);
   if (!taskData) return;
 
   const hasImage = message.attachments.some((att) => {
-    if (att.contentType && att.contentType.startsWith('image/')) return true;
+    if (att.contentType?.startsWith('image/')) return true;
     return /\.(png|jpe?g|gif|webp)$/i.test(att.name || '');
   });
 
   if (!hasImage) return;
 
   try {
-    const member = await guild.members.fetch(message.author.id);
-    const role = guild.roles.cache.get(taskData.roleId);
+    const member = await message.guild.members.fetch(message.author.id);
+    const role = message.guild.roles.cache.get(taskData.roleId);
     if (!role) return;
 
     if (member.roles.cache.has(role.id)) return;
 
     await member.roles.add(role);
-
     taskData.approvedCount += 1;
 
     await message.react('✅');
 
     if (taskData.approvedCount >= taskData.userLimit) {
-      await message.channel.permissionOverwrites.edit(guild.roles.everyone, {
-        SendMessages: false,
-      });
+      await message.channel.permissionOverwrites.edit(
+        message.guild.roles.everyone,
+        { SendMessages: false }
+      );
 
       await message.channel.send(
-        `🚫 User limit reached (**${taskData.userLimit}**). Channel has been locked.`
+        `🚫 User limit reached (**${taskData.userLimit}**). Channel locked.`
       );
     }
   } catch (err) {
-    console.error('Error auto-approving screenshot:', err);
+    console.error('❌ Auto-approve error:', err);
   }
 });
+
+/* -------------------- SLASH COMMANDS -------------------- */
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
+  const guild = interaction.guild;
+  const member = interaction.member;
+
+  /* -------- NEW TASK -------- */
 
   if (commandName === 'newtask') {
-    const member = interaction.member;
-    const guild = interaction.guild;
-
     if (!isAdmin(member)) {
-      return interaction.reply({
-        content: '❌ You do not have permission to use this command.',
-        flags: 64,
-      });
+      return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     }
 
     const taskName = interaction.options.getString('name', true);
@@ -112,35 +119,22 @@ client.on('interactionCreate', async (interaction) => {
 
     if (userLimit <= 0) {
       return interaction.reply({
-        content: '❌ `userlimit` must be a positive number.',
-        flags: 64,
+        content: '❌ userlimit must be positive.',
+        ephemeral: true,
       });
     }
 
-    await interaction.deferReply({ flags: 64 });
+    await interaction.deferReply({ ephemeral: true });
+
     try {
       const taskChannels = guild.channels.cache.filter(
-        (ch) =>
-          ch.type === ChannelType.GuildText &&
-          /^task-\d+$/.test(ch.name)
+        (ch) => ch.type === ChannelType.GuildText && /^task-\d+$/.test(ch.name)
       );
 
       let nextIndex = 1;
-
-      if (taskChannels.size > 0) {
-        const numbers = [];
-
-        taskChannels.forEach((ch) => {
-          const match = ch.name.match(/^task-(\d+)$/);
-          if (match) {
-            const n = parseInt(match[1], 10);
-            if (!isNaN(n)) numbers.push(n);
-          }
-        });
-
-        if (numbers.length > 0) {
-          nextIndex = Math.max(...numbers) + 1;
-        }
+      if (taskChannels.size) {
+        const nums = taskChannels.map((c) => Number(c.name.split('-')[1]));
+        nextIndex = Math.max(...nums) + 1;
       }
 
       const channelName = `task-${nextIndex}`;
@@ -189,114 +183,92 @@ client.on('interactionCreate', async (interaction) => {
         ? `<@&${CONFIG.tryoutRoleId}>`
         : '';
 
-      const taskMessage = await taskChannel.send({
-        content: 
-`${tryoutMention}
+      const msg = await taskChannel.send({
+        content: `${tryoutMention}
 
 📌 **New Task Created**
 
 \`\`\`
-━━━━━━━━━━━━━━━━━━━━
-  TASK INFORMATION
-━━━━━━━━━━━━━━━━━━━━
-
 Task Name   : ${taskName}
 Channel     : ${taskChannel.name}
 User Limit  : ${userLimit}
 Amount      : ${amount}
 Description : ${description}
-
-━━━━━━━━━━━━━━━━━━━━
 \`\`\`
 
-🔗 **Task Link:** ${link}
+🔗 Task Link: ${link}
 
-📸 Upload your screenshot in this channel.
-The bot will auto-approve ✅ and lock the channel when the limit is reached.
-`
+📸 Upload screenshot here.
+Auto-approved ✅ until limit is reached.`,
       });
 
-      await taskMessage.pin();
+      await msg.pin();
 
-      await interaction.editReply({
-        content: `✅ Task **${taskName}** created in ${taskChannel}.`,
-      });
-    } catch (err) {
-      console.error('Error in /newtask:', err);
       await interaction.editReply(
-        '❌ Something went wrong creating the task. Check bot permissions.'
+        `✅ Task **${taskName}** created in ${taskChannel}.`
       );
+    } catch (err) {
+      console.error('❌ /newtask error:', err);
+      await interaction.editReply('❌ Failed to create task.');
     }
   }
 
-  function getTargetChannel(interaction, optionName) {
-    return interaction.options.getChannel(optionName) || interaction.channel;
-  }
+  /* -------- CLOSE -------- */
 
   if (commandName === 'close') {
-    const member = interaction.member;
-    const guild = interaction.guild;
-
     if (!isAdmin(member)) {
-      return interaction.reply({
-        content: '❌ No permission.',
-        flags: 64,
-      });
+      return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     }
 
-    const channel = getTargetChannel(interaction, 'channel');
+    const channel = interaction.options.getChannel('channel') || interaction.channel;
 
-    await channel.permissionOverwrites.edit(guild.roles.everyone, {
-      SendMessages: false,
-    });
+    await channel.permissionOverwrites.edit(
+      guild.roles.everyone,
+      { SendMessages: false }
+    );
 
     await interaction.reply(`🔒 ${channel} closed.`);
   }
 
-  if (commandName === 'open') {
-    const member = interaction.member;
-    const guild = interaction.guild;
+  /* -------- OPEN -------- */
 
+  if (commandName === 'open') {
     if (!isAdmin(member)) {
-      return interaction.reply({
-        content: '❌ No permission.',
-        flags: 64,
-      });
+      return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     }
 
-    const channel = getTargetChannel(interaction, 'channel');
+    const channel = interaction.options.getChannel('channel') || interaction.channel;
 
-    await channel.permissionOverwrites.edit(guild.roles.everyone, {
-      SendMessages: true,
-    });
+    await channel.permissionOverwrites.edit(
+      guild.roles.everyone,
+      { SendMessages: true }
+    );
 
-    await interaction.reply(`🔓 ${channel} reopened.`);
+    await interaction.reply(`🔓 ${channel} opened.`);
   }
 
-  if (commandName === 'end') {
-    const member = interaction.member;
-    const guild = interaction.guild;
+  /* -------- END -------- */
 
+  if (commandName === 'end') {
     if (!isAdmin(member)) {
-      return interaction.reply({
-        content: '❌ No permission.',
-        flags: 64,
-      });
+      return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     }
 
-    const channel = getTargetChannel(interaction, 'channel');
+    const channel = interaction.options.getChannel('channel') || interaction.channel;
 
     await channel.setParent(CONFIG.completedCategoryId);
 
-    await channel.permissionOverrites?.edit?.(guild.roles.everyone, {
-      SendMessages: false,
-    });
-
-    await interaction.reply(
-      `✅ ${channel} moved to COMPLETED and locked.`
+    await channel.permissionOverwrites.edit(
+      guild.roles.everyone,
+      { SendMessages: false }
     );
+
+    await interaction.reply(`✅ ${channel} moved to COMPLETED.`);
   }
 });
+
+/* -------------------- HTTP SERVER (RENDER FIX) -------------------- */
+
 const PORT = process.env.PORT || 3000;
 
 http
@@ -307,5 +279,7 @@ http
   .listen(PORT, () => {
     console.log(`🌐 HTTP server listening on port ${PORT}`);
   });
+
+/* -------------------- LOGIN -------------------- */
 
 client.login(process.env.BOT_TOKEN);
